@@ -21,7 +21,7 @@ if __name__ == '__main__':
     
 
     spark_session = SparkSessionFactory.create_spark_session()
-    deltaTable = DeltaTable.forPath(spark_session, f"{_env['DATA_LAKE_PATH']}/processed_data")
+    delta_path = f"{_env['DATA_LAKE_PATH']}/processed_data/result"
 
     response = requests.get(url)
     pdf = pd.read_csv(StringIO(response.text))
@@ -45,13 +45,17 @@ if __name__ == '__main__':
         .when(col('home_score') == col('away_score'), result_map['draw']) \
         .when(col('home_score') < col('away_score'), result_map['away_win'])
     )
-    print(data_df.printSchema())
 
-    deltaTable.alias("target").merge(
-    data_df.alias("source"),
-    "target.date = source.date AND target.home_team = source.home_team AND target.away_team = source.away_team"
-    ).whenMatchedUpdateAll() \
-    .whenNotMatchedInsertAll() \
-    .execute()
+    if DeltaTable.isDeltaTable(spark_session, delta_path):
+        deltaTable = DeltaTable.forPath(spark_session, delta_path)
+
+        deltaTable.alias("target").merge(
+        data_df.alias("source"),
+        "target.date = source.date AND target.home_team = source.home_team AND target.away_team = source.away_team"
+        ).whenMatchedUpdateAll() \
+        .whenNotMatchedInsertAll() \
+        .execute()
+    else:
+        data_df.write.format("delta").mode("overwrite").save(delta_path) # it saves delta log
         
     spark_session.stop()

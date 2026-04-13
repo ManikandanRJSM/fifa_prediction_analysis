@@ -5,7 +5,7 @@ class GetEnv:
     @staticmethod
     def get_env_variables():
         # Get absolute path of project root
-        BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        BASE_DIR = os.path.dirname('./')
 
         # Construct .env path
         env_path = os.path.join(BASE_DIR, ".env")
