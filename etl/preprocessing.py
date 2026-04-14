@@ -2,19 +2,150 @@ import requests
 import pandas as pd
 from io import StringIO
 from .CustomFactories.SparkSessionFactory import SparkSessionFactory
-from pyspark.sql.functions import col, isnan, to_date, when, count
-from .app_constants.constants import result_map, pre_process_schema
+from pyspark.sql.functions import col, isnan, to_date, when, count, monotonically_increasing_id, lit
+from .app_constants.constants import result_map, pre_process_schema, K_map
 from delta.tables import DeltaTable
 from .helpers.GetEnv import GetEnv
+import json
 
 
-def feature_extraction(sparkSession, dataframe):
+def feature_extraction(sparkSession, dataframe, data_lake_path):
     dataframe.createOrReplaceTempView('PreprocessTable')
-    featured_result = sparkSession.sql("""
 
-                        select count(*) cnt, home_team from preprocessTable group by home_team
-                        """)
-    featured_result.show()
+    team_form = sparkSession.sql(f"""
+                        CREATE OR REPLACE TEMP VIEW teamHistory AS
+                        -- home team row
+                        SELECT
+                            formated_date,
+                            home_team AS team,
+                            if(match_result = {result_map['home_win']}, 1, 0) AS win
+                        FROM preprocessTable
+
+                        UNION ALL
+
+                        -- away team row
+                        SELECT
+                            formated_date,
+                            away_team AS team,
+                            if(match_result = {result_map['away_win']}, 1, 0) AS win
+                        FROM preprocessTable     
+                    """)
+    
+
+    sparkSession.sql(f"""
+                        CREATE OR REPLACE TEMP VIEW teamForm AS
+                        SELECT formated_date, 
+                        team, 
+                        coalesce(round(avg(win) over(partition by team order by formated_date rows between 5 preceding and 1 preceding), 2), 0.00) AS win_rate_5
+                        FROM teamHistory
+                     
+    """)
+    
+    featured_result = sparkSession.sql(f"""
+        SELECT
+            pt.*,
+            home_tf.win_rate_5 AS home_team_win_rate_5,
+            away_tf.win_rate_5 AS away_team_win_rate_5,
+            coalesce(round(AVG(
+                if(
+                    (pt.home_team = Q.home_team AND Q.match_result = {result_map['home_win']}) OR
+                    (pt.home_team = Q.away_team AND Q.match_result = {result_map['away_win']}),
+                    1, 0
+                )
+            ), 2), 0.00) AS h2h_win_ratio_home,
+            coalesce(round(AVG(
+                Q.home_score + Q.away_score
+            ), 2), 0.00) AS h2h_avg_goals
+
+        FROM preprocessTable pt
+
+        LEFT JOIN teamForm home_tf
+            ON pt.formated_date = home_tf.formated_date
+            AND pt.home_team = home_tf.team
+
+        LEFT JOIN teamForm away_tf
+            ON pt.formated_date = away_tf.formated_date
+            AND pt.away_team = away_tf.team
+
+        LEFT JOIN preprocessTable Q
+            ON (
+                (Q.home_team = pt.home_team AND Q.away_team = pt.away_team) OR
+                (Q.home_team = pt.away_team  AND Q.away_team = pt.home_team)
+            )
+            AND Q.formated_date < pt.formated_date
+
+        GROUP BY
+            pt.date,
+            pt.formated_date,
+            pt.home_team,
+            pt.away_team,
+            pt.home_score,
+            pt.away_score,
+            pt.tournament,
+            pt.city,
+            pt.country,
+            pt.neutral,
+            pt.match_result,
+            home_tf.win_rate_5,
+            away_tf.win_rate_5
+
+        ORDER BY pt.formated_date
+    """)
+
+    
+    # featured_result.show(2)
+    featured_result = featured_result.withColumn('inc_id', monotonically_increasing_id() + 1).withColumn('home_elo', lit(None).cast("double")).withColumn('away_elo', lit(None).cast("double"))
+    
+    
+    pdf = featured_result.toPandas()
+
+    elo_dict = {}
+    default_elo = 1500
+
+    for indx, row in pdf.iterrows():
+
+        home_team  = row['home_team']
+        away_team  = row['away_team']
+        tournament = row['tournament']
+        result     = row['match_result']
+
+        # step 1 — fetch elo (default 1500 if first time)
+        home_elo = elo_dict.get(home_team, default_elo)
+        away_elo = elo_dict.get(away_team, default_elo)
+
+        # step 2 — calculate expected prob
+        E_home = 1 / (1 + 10 ** ((away_elo - home_elo) / 400))
+
+        # step 3 — store as features BEFORE updating
+        pdf.at[indx, 'home_elo']      = home_elo
+        pdf.at[indx, 'away_elo']      = away_elo
+        pdf.at[indx, 'elo_diff']      = round(home_elo - away_elo, 2)
+        pdf.at[indx, 'expected_prob'] = round(E_home, 2)
+
+        # step 4 — actual result
+        if result == result_map['home_win']:
+            S_home = 1
+        elif result == result_map['draw']:
+            S_home = 0.5
+        else:
+            S_home = 0
+
+        # step 5 — K factor
+        K = K_map.get(tournament, 20)
+
+        # step 6 — update elo AFTER match
+        elo_dict[home_team] = round(float(home_elo + K * (S_home - E_home)), 2)
+        elo_dict[away_team] = round(float(away_elo + K * ((1 - S_home) - (1 - E_home))), 2)
+
+        with open(f'{data_lake_path}/pre_processed_data/elo/elo.json', 'w') as f:
+            json.dump(elo_dict, f, indent=2)
+
+
+    # for indx, row in pdf.iterrows():
+
+    #     auto_increment_id = row['inc_id']
+
+        
 
 
 
@@ -72,6 +203,6 @@ if __name__ == '__main__':
         data_df.write.format("delta").mode("overwrite").save(delta_path) # it saves delta log
 
 
-    feature_extraction(spark_session, data_df)
+    feature_extraction(spark_session, data_df, _env['DATA_LAKE_PATH'])
         
     spark_session.stop()
