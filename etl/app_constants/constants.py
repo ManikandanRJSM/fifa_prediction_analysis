@@ -4,8 +4,6 @@ result_map = {
     'away_win' : 2
 }
 
-pre_process_schema = ['home_score', 'away_score', 'tournament', 'city', 'country', 'neutral', 'match_result']
-
 
 
 K_map = {

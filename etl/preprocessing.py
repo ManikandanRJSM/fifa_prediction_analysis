@@ -1,15 +1,20 @@
 import requests
 import pandas as pd
 from io import StringIO
-from .CustomFactories.SparkSessionFactory import SparkSessionFactory
+from CustomFactories.SparkSessionFactory import SparkSessionFactory
 from pyspark.sql.functions import col, isnan, to_date, when, count, monotonically_increasing_id, lit
-from .app_constants.constants import result_map, pre_process_schema, K_map
+from .app_constants.constants import result_map, K_map
 from delta.tables import DeltaTable
-from .helpers.GetEnv import GetEnv
+from helpers.GetEnv import GetEnv
+from GlobalConstants.constants import pre_process_schema
 import json
 
 
 def feature_extraction(sparkSession, dataframe, data_lake_path):
+
+    featured_delta_path = f"{data_lake_path}/pre_processed_data/featured_result"
+
+
     dataframe.createOrReplaceTempView('PreprocessTable')
 
     team_form = sparkSession.sql(f"""
@@ -137,13 +142,26 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
         elo_dict[home_team] = round(float(home_elo + K * (S_home - E_home)), 2)
         elo_dict[away_team] = round(float(away_elo + K * ((1 - S_home) - (1 - E_home))), 2)
 
-        with open(f'{data_lake_path}/pre_processed_data/elo/elo.json', 'w') as f:
-            json.dump(elo_dict, f, indent=2)
+    feature_df = sparkSession.createDataFrame(pdf)
 
+    feature_df = feature_df.withColumn( 'home_score', col('home_score').cast("int") ).withColumn( 'away_score', col('away_score').cast("int") )
 
-    # for indx, row in pdf.iterrows():
+    feature_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(featured_delta_path) # option("mergeSchema", "true") for schema evolution
 
-    #     auto_increment_id = row['inc_id']
+    # if DeltaTable.isDeltaTable(spark_session, delta_path):
+    #     deltaTable = DeltaTable.forPath(spark_session, delta_path)
+
+    #     deltaTable.alias("target").merge(
+    #     data_df.alias("source"),
+    #     "target.date = source.date AND target.home_team = source.home_team AND target.away_team = source.away_team AND target.match_result = source.match_result"
+    #     ).whenMatchedUpdate(condition=condition_to_check, set={ col: f"source.{col}" for col in pre_process_schema }) \
+    #     .whenNotMatchedInsertAll() \
+    #     .execute()
+    # else:
+    #     data_df.write.format("delta").mode("overwrite").save(delta_path) # it saves delta log
+        
+    with open(f'{data_lake_path}/pre_processed_data/elo/elo.json', 'w') as f:
+        json.dump(elo_dict, f, indent=2)
 
         
 
@@ -165,7 +183,7 @@ if __name__ == '__main__':
     response = requests.get(url)
     pdf = pd.read_csv(StringIO(response.text))
 
-    # Convert Pandas → Spark DataFrame
+    # Convert Pandas -> Spark DataFrame
     df = spark_session.createDataFrame(pdf)
 
     upcoming_matches_df = df.filter(isnan(col('home_score')) & isnan(col('away_score')))
@@ -180,7 +198,7 @@ if __name__ == '__main__':
     cleaned_df = cleaned_df.withColumn( 'home_score', col('home_score').cast("int") ).withColumn( 'away_score', col('away_score').cast("int") )
     
     # Quarantine DF
-    quarantine_df = df.expectAll(cleaned_df)
+    quarantine_df = df.exceptAll(cleaned_df)
 
     if end_date is not None:
         cleaned_df = cleaned_df.filter( col('formated_date').between(start_date, end_date) )
@@ -198,7 +216,7 @@ if __name__ == '__main__':
 
         deltaTable.alias("target").merge(
         data_df.alias("source"),
-        "target.date = source.date AND target.home_team = source.home_team AND target.away_team = source.away_team"
+        "target.date = source.date AND target.home_team = source.home_team AND target.away_team = source.away_team AND target.match_result = source.match_result"
         ).whenMatchedUpdate(condition=condition_to_check, set={ col: f"source.{col}" for col in pre_process_schema }) \
         .whenNotMatchedInsertAll() \
         .execute()
