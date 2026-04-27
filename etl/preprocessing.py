@@ -175,14 +175,17 @@ if __name__ == '__main__':
         .filter(~isnan(col('home_score')) & ~isnan(col('away_score')))
     
     # Remove the duplicate entry
-    df = df.filter( (col('tournament') != 'Friendly') & (col('home_team') != 'Tahiti') & (col('away_team') != 'New Caledonia') & (col('date') != '1974-02-17') )
+    cleaned_df = df.dropDuplicates()
     
-    df = df.withColumn( 'home_score', col('home_score').cast("int") ).withColumn( 'away_score', col('away_score').cast("int") )
+    cleaned_df = cleaned_df.withColumn( 'home_score', col('home_score').cast("int") ).withColumn( 'away_score', col('away_score').cast("int") )
+    
+    # Quarantine DF
+    quarantine_df = df.expectAll(cleaned_df)
 
     if end_date is not None:
-        df = df.filter( col('formated_date').between(start_date, end_date) )
+        cleaned_df = cleaned_df.filter( col('formated_date').between(start_date, end_date) )
     
-    data_df = df.withColumn(
+    data_df = cleaned_df.withColumn(
         'match_result', when(col('home_score') > col('away_score'), result_map['home_win']) \
         .when(col('home_score') == col('away_score'), result_map['draw']) \
         .when(col('home_score') < col('away_score'), result_map['away_win'])
