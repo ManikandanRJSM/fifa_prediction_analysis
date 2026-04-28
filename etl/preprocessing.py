@@ -8,11 +8,13 @@ from delta.tables import DeltaTable
 from helpers.GetEnv import GetEnv
 from GlobalConstants.constants import pre_process_schema
 import json
+import argparse
 
 
 def feature_extraction(sparkSession, dataframe, data_lake_path):
 
     featured_delta_path = f"{data_lake_path}/pre_processed_data/featured_result"
+    featured_csv_path = f"{data_lake_path}/pre_processed_data/training_dataset"
 
 
     dataframe.createOrReplaceTempView('PreprocessTable')
@@ -145,7 +147,8 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
     feature_df = sparkSession.createDataFrame(pdf)
 
     feature_df = feature_df.withColumn( 'home_score', col('home_score').cast("int") ).withColumn( 'away_score', col('away_score').cast("int") )
-
+  
+    feature_df.write.format('csv').mode("overwrite").option("header", True).save(featured_csv_path)
     feature_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(featured_delta_path) # option("mergeSchema", "true") for schema evolution
 
     # if DeltaTable.isDeltaTable(spark_session, delta_path):
@@ -162,23 +165,34 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
         
     with open(f'{data_lake_path}/pre_processed_data/elo/elo.json', 'w') as f:
         json.dump(elo_dict, f, indent=2)
+    print("Preprocessing Done............!")
 
         
 
 
-
-
 if __name__ == '__main__':
 
-    start_date = '1872-11-30'
-    end_date = '2024-12-31'
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--mode", required=True, type=str, choices=['test', 'train'], default='train', help="Preprocess data for train / test")
+    # parser.add_argument("--start_date", required=True, type=str, default='1872-11-30', help="Start date")
+    # parser.add_argument("--end_date", required=True, type=str, default='2024-12-31', help="End date")
+
+    # args = parser.parse_args()
+
+    # mode = args.mode
+    # start_date = args.start_date
+    # end_date = args.end_date
     _env = GetEnv.get_env_variables()
 
     url = "https://raw.githubusercontent.com/ManikandanRJSM/international_results/master/results.csv"
     
 
     spark_session = SparkSessionFactory.create_spark_session()
-    delta_path = f"{_env['DATA_LAKE_PATH']}/pre_processed_data/result"
+
+    # if mode == 'test':
+    #     delta_path = f"{_env['DATA_LAKE_PATH']}/pre_processed_data/test_data"
+    # else:
+    delta_path = f"{_env['DATA_LAKE_PATH']}/pre_processed_data/preprocessed_result"
 
     response = requests.get(url)
     pdf = pd.read_csv(StringIO(response.text))
@@ -195,13 +209,16 @@ if __name__ == '__main__':
     # Remove the duplicate entry
     cleaned_df = df.dropDuplicates()
     
-    cleaned_df = cleaned_df.withColumn( 'home_score', col('home_score').cast("int") ).withColumn( 'away_score', col('away_score').cast("int") )
+    cleaned_df = cleaned_df.withColumns( {
+        'home_score' : col('home_score').cast("int"),
+        'away_score' : col('away_score').cast("int")
+    })
     
     # Quarantine DF
     quarantine_df = df.exceptAll(cleaned_df)
 
-    if end_date is not None:
-        cleaned_df = cleaned_df.filter( col('formated_date').between(start_date, end_date) )
+    # if end_date is not None:
+    #     cleaned_df = cleaned_df.filter( col('formated_date').between(start_date, end_date) )
     
     data_df = cleaned_df.withColumn(
         'match_result', when(col('home_score') > col('away_score'), result_map['home_win']) \
