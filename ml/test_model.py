@@ -41,16 +41,17 @@ if __name__ == "__main__":
 
     # Load saved model
     loaded_model = joblib.load(model_path)
+    Y_pred = loaded_model.predict(X_test_pd)
 
     result_df = pd.DataFrame({
-        "actual"   : Y_test_pd.values,
-        "predicted": loaded_model.predict(X_test_pd)
+        "actual"   : Y_test_pd.squeeze(), #converts 2D dataframe (i.e rows and cols) to 1D dataframe
+        "predicted": Y_pred
     })
 
-    print(result_df)
+    print(result_df.head())
 
     # Predict on test data
-    # Y_pred = loaded_model.predict(X_test_pd)
+    # 
 
     # print("Actual results   :", list(Y_test_pd))
     # print("Predicted results:", list(Y_pred))
