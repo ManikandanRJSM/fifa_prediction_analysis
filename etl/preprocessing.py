@@ -2,7 +2,8 @@ import requests
 import pandas as pd
 from io import StringIO
 from CustomFactories.SparkSessionFactory import SparkSessionFactory
-from pyspark.sql.functions import col, isnan, to_date, when, count, monotonically_increasing_id, lit
+from pyspark.sql.functions import col, isnan, to_date, when, count, monotonically_increasing_id, lit, sum
+from pyspark.sql import functions as F
 from .app_constants.constants import result_map, K_map
 from delta.tables import DeltaTable
 from helpers.GetEnv import GetEnv
@@ -16,6 +17,14 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
     featured_delta_path = f"{data_lake_path}/pre_processed_data/featured_result"
     featured_csv_path = f"{data_lake_path}/pre_processed_data/training_dataset"
 
+    
+    get_total_wins = dataframe.filter(col('match_result').isin([1, 2])).count()
+    get_total_goals = dataframe.agg(sum('total_goals')).alias('sum_goals').collect()
+    total_matches = dataframe.count()
+
+    global_average = round(get_total_wins/total_matches, 2)
+    global_goals_socred_avg = round(get_total_goals[0][0]/total_matches, 2)
+
 
     dataframe.createOrReplaceTempView('PreprocessTable')
 
@@ -25,7 +34,8 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
                         SELECT
                             formated_date,
                             home_team AS team,
-                            if(match_result = {result_map['home_win']}, 1, 0) AS win
+                            if(match_result = {result_map['home_win']}, 1, 0) AS win,
+                            home_score goals
                         FROM preprocessTable
 
                         UNION ALL
@@ -34,7 +44,8 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
                         SELECT
                             formated_date,
                             away_team AS team,
-                            if(match_result = {result_map['away_win']}, 1, 0) AS win
+                            if(match_result = {result_map['away_win']}, 1, 0) AS win,
+                            away_score goals
                         FROM preprocessTable     
                     """)
     
@@ -43,7 +54,8 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
                         CREATE OR REPLACE TEMP VIEW teamForm AS
                         SELECT formated_date, 
                         team, 
-                        coalesce(round(avg(win) over(partition by team order by formated_date rows between 5 preceding and 1 preceding), 2), 0.00) AS win_rate_5
+                        coalesce(round(avg(win) over(partition by team order by formated_date rows between 6 preceding and 1 preceding), 2), {global_average}) AS win_rate_5,
+                        coalesce(round(avg(goals) over(partition by team order by formated_date rows between 6 preceding and 1 preceding), 2), {global_goals_socred_avg}) AS avg_goalsrate_5
                         FROM teamHistory
                      
     """)
@@ -53,6 +65,8 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
             pt.*,
             home_tf.win_rate_5 AS home_team_win_rate_5,
             away_tf.win_rate_5 AS away_team_win_rate_5,
+            home_tf.avg_goalsrate_5 AS home_team_avg_goals_rate_5,
+            away_tf.avg_goalsrate_5 AS away_team_avg_goals_rate_5,
             coalesce(round(AVG(
                 if(
                     (pt.home_team = Q.home_team AND Q.match_result = {result_map['home_win']}) OR
@@ -84,6 +98,9 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
         GROUP BY
             pt.date,
             pt.formated_date,
+            pt.total_goals,
+            pt.is_neutral,
+            pt.match_importance,
             pt.home_team,
             pt.away_team,
             pt.home_score,
@@ -94,7 +111,9 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
             pt.neutral,
             pt.match_result,
             home_tf.win_rate_5,
-            away_tf.win_rate_5
+            away_tf.win_rate_5,
+            home_tf.avg_goalsrate_5,
+            away_tf.avg_goalsrate_5
 
         ORDER BY pt.formated_date
     """)
@@ -103,7 +122,8 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
     # featured_result.show(2)
     featured_result = featured_result.withColumn('inc_id', monotonically_increasing_id() + 1).withColumn('home_elo', lit(None).cast("double")).withColumn('away_elo', lit(None).cast("double"))
     
-    
+    featured_result.show()
+    exit()
     pdf = featured_result.toPandas()
 
     elo_dict = {}
@@ -165,6 +185,8 @@ def feature_extraction(sparkSession, dataframe, data_lake_path):
         
     with open(f'{data_lake_path}/pre_processed_data/elo/elo.json', 'w') as f:
         json.dump(elo_dict, f, indent=2)
+
+    featured_result.printSchema()
     print("Preprocessing Done............!")
 
         
@@ -196,6 +218,7 @@ if __name__ == '__main__':
 
     response = requests.get(url)
     pdf = pd.read_csv(StringIO(response.text))
+    mapping_expr = F.create_map([lit(x) for kv in K_map.items() for x in kv])
 
     # Convert Pandas -> Spark DataFrame
     df = spark_session.createDataFrame(pdf)
@@ -220,11 +243,17 @@ if __name__ == '__main__':
     # if end_date is not None:
     #     cleaned_df = cleaned_df.filter( col('formated_date').between(start_date, end_date) )
     
-    data_df = cleaned_df.withColumn(
+    cleaned_df = cleaned_df.withColumn(
         'match_result', when(col('home_score') > col('away_score'), result_map['home_win']) \
         .when(col('home_score') == col('away_score'), result_map['draw']) \
         .when(col('home_score') < col('away_score'), result_map['away_win'])
     )
+
+    data_df = cleaned_df.withColumns({
+        'total_goals' : col('home_score') + col('away_score'),
+        'is_neutral' : when(col('neutral') == True, 1).otherwise(0),
+        'match_importance' : F.coalesce(mapping_expr[col('tournament')], lit(20))
+    })
 
     condition_to_check = " OR ".join([ f"target.{i} != source.{i}" for i in pre_process_schema ])
 
