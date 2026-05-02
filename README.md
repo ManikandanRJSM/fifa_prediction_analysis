@@ -152,8 +152,6 @@ virtualenv
 |--------|-------|
 | Accuracy | 64.89% |
 
-> Results will be updated after final model evaluation runs.
-
 ---
 
 ## 📜 License
