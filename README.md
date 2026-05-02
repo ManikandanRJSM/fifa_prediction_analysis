@@ -150,9 +150,7 @@ virtualenv
 
 | Metric | Score |
 |--------|-------|
-| Accuracy | _TBD after training_ |
-| F1-Score (macro) | _TBD_ |
-| Train/Test Split | _TBD_ |
+| Accuracy | 64.89% |
 
 > Results will be updated after final model evaluation runs.
 
