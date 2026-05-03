@@ -6,6 +6,7 @@ from CustomFactories.SparkSessionFactory import SparkSessionFactory
 from pathlib import Path
 from pyspark.sql.functions import col
 from sklearn.utils.class_weight import compute_sample_weight
+from sklearn.metrics import accuracy_score
 
 import xgboost as xgb
 
@@ -31,7 +32,7 @@ if __name__ == "__main__":
     model_path = f"{_env['DATA_LAKE_PATH']}/model/fifa_xgb_model.pkl"
     spark_session = SparkSessionFactory.create_spark_session()
 
-    df = spark_session.read.format('delta').load(f"{_env['DATA_LAKE_PATH']}/pre_processed_data/featured_result")
+    df = spark_session.read.format('delta').load(f"{_env['DATA_LAKE_PATH']}/featured_result/vectors")
 
     df = df.filter( col('formated_date').between(start_date, end_date) )
 
@@ -42,13 +43,16 @@ if __name__ == "__main__":
 
     sample_weights = compute_sample_weight('balanced', y_train)
     model = xgb.XGBClassifier(
-        n_estimators     = 200,
-        max_depth        = 6,
-        learning_rate    = 0.1,
+        n_estimators     = 500,
+        max_depth        = 7,     # increase from 6
+        learning_rate    = 0.05,
         subsample        = 0.8,
         colsample_bytree = 0.8,
-        objective        = "binary:logistic",
-        num_class        = 3,
+        min_child_weight = 3,     # reduce from 4
+        gamma            = 0.01,  # reduce from 0.05
+        reg_lambda       = 0.5,   # reduce from 1.0
+        reg_alpha        = 0.05,  # reduce from 0.1
+        objective        = 'binary:logistic',
         random_state     = 42
     )
 
@@ -59,4 +63,9 @@ if __name__ == "__main__":
 
     joblib.dump(model, model_path)
 
+    train_accuracy = accuracy_score(y_train, model.predict(X_train))
+
+    print(f"Train Accuracy : {round(train_accuracy * 100, 2)}%")
+
     print("Model saved!")
+    spark_session.stop()

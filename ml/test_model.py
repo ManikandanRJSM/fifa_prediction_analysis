@@ -28,9 +28,9 @@ if __name__ == "__main__":
     model_evaluation_result_path = f"{_env['DATA_LAKE_PATH']}/model_evaluation_result"
 
     spark_session = SparkSessionFactory.create_spark_session()
-    df = spark_session.read.format('delta').load(f"{_env['DATA_LAKE_PATH']}/pre_processed_data/featured_result")
+    df = spark_session.read.format('delta').load(f"{_env['DATA_LAKE_PATH']}/featured_result/vectors")
 
-    # Get test data from start date and end with only matches with win / lose (ignores draw's since most models struggles with lose results)
+    # Get test data from start date and end with only matches with win / lose (ignores draw's since most models struggles with draw results)
     df = df.filter( col('formated_date').between(start_date, end_date) ).filter(col('match_result').isin([1, 2]))
 
     X_test = df.select(x_test_schema) # Only Metrics
@@ -73,9 +73,11 @@ if __name__ == "__main__":
     plt.close()
 
     accuracy = accuracy_score(Y_test_pd, Y_pred)
+    
     print(f"Model Accuracy: {round(accuracy * 100, 2)}%")
 
     print("Model test completed..............!")
+    spark_session.stop()
 
     # Predict on test data
     # 
